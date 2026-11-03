@@ -13,8 +13,7 @@ For each line report the number of the shape at its other end and where the arro
 - "other" = arrowhead touches the other shape only
 - "both" = arrowheads at both ends
 - "none" = no arrowhead
-Also list any shapes visible in the image that are not in the list above.
-Return JSON: {"shapes":[{"i":1,"lines":[{"to":3,"arrowhead":"other"}]}],"missing_shapes":["label"]}"""
+Return JSON: {"shapes":[{"i":1,"lines":[{"to":3,"arrowhead":"other"}]}]}"""
 
 
 def _lab(n):
@@ -23,6 +22,7 @@ def _lab(n):
 
 
 def _norm(i, j, head):
+    """Normalise one reported line into (source, target, kind)."""
     if head == "other":
         return (i, j, "->")
     if head == "this":
@@ -30,14 +30,20 @@ def _norm(i, j, head):
     return (min(i, j), max(i, j), "<->" if head == "both" else "--")
 
 
-def trace_edges(image, nodes, edges, model=None):
+def trace_edges(image, nodes, edges):
+    """Cross-check the first-pass edges by tracing lines from every shape.
+
+    An edge seen by the first pass and by at least one traced end is kept (solid).
+    An edge only the first pass saw is dropped. An edge only one traced end saw is
+    kept but marked uncertain (dashed). Returns (edges, notes).
+    """
     n = len(nodes)
     ids = [str(x.get("id")) for x in nodes]
     pos = {nid: k + 1 for k, nid in enumerate(ids)}
     listing = "\n".join(f"{k + 1}. {_lab(x)} ({x.get('shape', 'box')})"
                         for k, x in enumerate(nodes))
     res = vision_json(SYSTEM, TRACE_PROMPT.replace("<<SHAPES>>", listing),
-                      [image], detail="high", model=model)
+                      [image], detail="high")
 
     reports = {}
     for s in res.get("shapes") or []:
@@ -70,7 +76,14 @@ def trace_edges(image, nodes, edges, model=None):
             norm = (min(i, j), max(i, j), "--")
         else:
             norm = (i, j, "->")
-        a_edges[frozenset((i, j))] = (norm, str(e.get("label") or ""))
+        key = frozenset((i, j))
+        label = str(e.get("label") or "")
+        if key in a_edges:
+            old_norm, old_label = a_edges[key]
+            if old_norm != norm:  # A->B and B->A listed separately means a two-way arrow
+                norm = (min(i, j), max(i, j), "<->")
+            label = label or old_label
+        a_edges[key] = (norm, label)
 
     out, notes = [], []
     for key in sorted(set(a_edges) | set(reports), key=lambda k: sorted(k)):

@@ -2,3 +2,5 @@
 .venv/
 work/
 samples/
+__pycache__/
+*.pyc

@@ -1,0 +1,6 @@
+openai
+requests
+python-dotenv
+pillow
+numpy
+imageio-ffmpeg
