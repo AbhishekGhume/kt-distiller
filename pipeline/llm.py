@@ -76,3 +76,18 @@ def vision_json(system, text, image_paths, detail="low"):
                         "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": detail}})
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": content}]
     return _parse_json(_ask(msgs, effort))
+
+EMBED_MODEL = os.environ.get("EMBEDDING_DEPLOYMENT")
+
+
+def embed(texts, batch=64):
+    """Return one embedding vector (list of floats) per input text."""
+    if not EMBED_MODEL:
+        raise RuntimeError("Set EMBEDDING_DEPLOYMENT in .env (name of your text-embedding deployment).")
+    out = []
+    for i in range(0, len(texts), batch):
+        r = _client.embeddings.create(model=EMBED_MODEL, input=texts[i:i + batch])
+        if r.usage:
+            usage["in"] += r.usage.prompt_tokens
+        out += [d.embedding for d in r.data]
+    return out

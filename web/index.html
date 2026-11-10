@@ -1,0 +1,75 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KT Distiller</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--mut:#57606a;--bd:#d0d7de;--card:#f6f8fa;--acc:#0969da}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--card:#161b22;--acc:#58a6ff}}
+body{font-family:system-ui,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
+main{max-width:1000px;margin:auto;padding:20px}
+h1{margin:0 0 4px}.mut{color:var(--mut);font-size:14px}
+.card{border:1px solid var(--bd);background:var(--card);border-radius:12px;padding:16px;margin:16px 0}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:28px;text-align:center;cursor:pointer}
+#drop.over{border-color:var(--acc)}
+button,select{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);cursor:pointer}
+button.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+.stage{padding:4px 0}.stage.done::before{content:"✓ ";color:#1a7f37}.stage.now::before{content:"… "}.stage.todo{color:var(--mut)}
+.tabs{display:flex;gap:8px;margin-bottom:10px}.tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+iframe{width:100%;height:75vh;border:1px solid var(--bd);border-radius:10px;background:#fff}
+#log{max-height:50vh;overflow:auto}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;border:1px solid var(--bd)}
+.msg.u{background:var(--card)}.cite{display:inline-block;margin:6px 4px 0 0;padding:1px 8px;border-radius:10px;background:var(--acc);color:#fff;font-size:12px}
+#q{width:70%;padding:9px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
+.err{color:#cf222e}.hide{display:none}
+</style></head><body><main>
+<h1>KT Distiller</h1>
+<div class="mut">Turn a KT recording into a study pack. Only upload recordings you are approved to process, in a company-approved subscription.</div>
+
+<div class="card">
+  <div id="drop" tabindex="0">Drop an .mp4 here, or click to choose<input id="file" type="file" accept=".mp4,video/mp4" class="hide"></div>
+  <p class="mut">Or open an earlier job: <select id="jobs"></select> <button id="openJob">Open</button></p>
+</div>
+
+<div id="progress" class="card hide"><b>Processing</b><div id="stages"></div><div id="perr" class="err"></div></div>
+
+<div id="result" class="hide">
+  <div class="tabs"><button id="t1" class="on">Study pack</button><button id="t2">Ask the KT</button></div>
+  <div id="p1"><iframe id="frame" title="Study pack"></iframe></div>
+  <div id="p2" class="card hide">
+    <div id="log"></div>
+    <p><input id="q" placeholder="Your question" aria-label="Question"> <button class="primary" id="send">Ask</button></p>
+  </div>
+</div>
+
+<script>
+let job=null,timer=null;
+const $=id=>document.getElementById(id);
+async function loadJobs(){const r=await (await fetch('/jobs')).json();$('jobs').innerHTML=r.map(j=>`<option value="${j.id}">${j.id} (${j.state})</option>`).join('')||'<option value="">none yet</option>';}
+function pick(f){if(!f)return;const fd=new FormData();fd.append('file',f);
+  $('perr').textContent='';$('progress').classList.remove('hide');$('result').classList.add('hide');$('stages').textContent='Uploading…';
+  fetch('/jobs',{method:'POST',body:fd}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail);return r.json()})
+   .then(j=>{job=j.jobId;poll();}).catch(e=>{$('perr').textContent=e.message;});}
+function poll(){clearInterval(timer);$('progress').classList.remove('hide');$('result').classList.add('hide');
+  const tick=async()=>{
+  const s=await (await fetch('/jobs/'+job)).json();
+  $('stages').innerHTML=(s.stages||[]).map((n,i)=>`<div class="stage ${s.state==='done'||i<s.stage?'done':i===s.stage?'now':'todo'}">${n}</div>`).join('');
+  if(s.state==='error'){clearInterval(timer);$('perr').textContent='Failed: '+s.error;}
+  if(s.state==='done'){clearInterval(timer);show();loadJobs();}};
+  tick();timer=setInterval(tick,2000);}
+function show(){$('progress').classList.add('hide');$('result').classList.remove('hide');
+  $('frame').src='/jobs/'+job+'/pack.html';$('log').innerHTML='<div class="mut">Ask anything about this KT, e.g. "What was left to share later?"</div>';}
+$('drop').onclick=()=>$('file').click();
+$('file').onchange=e=>pick(e.target.files[0]);
+$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('over')};
+$('drop').ondragleave=()=>$('drop').classList.remove('over');
+$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('over');pick(e.dataTransfer.files[0])};
+$('openJob').onclick=()=>{job=$('jobs').value;if(job)poll();};
+function tab(n){$('p1').classList.toggle('hide',n!==1);$('p2').classList.toggle('hide',n!==2);$('t1').classList.toggle('on',n===1);$('t2').classList.toggle('on',n===2);}
+$('t1').onclick=()=>tab(1);$('t2').onclick=()=>tab(2);
+function add(cls,text,cites){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;
+  if(cites&&cites.length){d.appendChild(document.createElement('br'));cites.forEach(c=>{const s=document.createElement('span');s.className='cite';s.textContent=c.label;d.appendChild(s);});}
+  $('log').appendChild(d);$('log').scrollTop=1e9;return d;}
+async function send(){const q=$('q').value.trim();if(!q||!job)return;$('q').value='';add('u',q);const w=add('a','Thinking…');
+  try{const r=await fetch('/jobs/'+job+'/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+   const j=await r.json();if(!r.ok)throw new Error(j.detail);w.remove();add('a',j.answer,j.citations);}
+  catch(e){w.textContent='Error: '+e.message;}}
+$('send').onclick=send;$('q').onkeydown=e=>{if(e.key==='Enter')send();};
+loadJobs();
+</script></main></body></html>
