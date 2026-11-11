@@ -2,16 +2,19 @@
 import re
 import uuid
 import shutil
+import time
 import threading
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from pipeline.common import load_json
+from pipeline.common import load_json, save_json
 
 WORK, SAMPLES, WEB = Path("work"), Path("samples"), Path("web")
 ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 app = FastAPI(title="KT Distiller")
+app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
 
 
 def jdir(job_id):
@@ -25,14 +28,36 @@ def home():
     return FileResponse(WEB / "index.html")
 
 
+def job_card(d):
+    """One library entry: state, display name and enough of the pack to draw a card."""
+    st = load_json(d / "status.json") if (d / "status.json").exists() else {"state": "done"}
+    meta = load_json(d / "meta.json") if (d / "meta.json").exists() else {}
+    item = {"id": d.name, "state": st["state"], "name": meta.get("name") or d.name,
+            "created": meta.get("created") or d.stat().st_mtime,
+            "stage": st.get("stage", 0), "stages": len(st.get("stages", [])),
+            "video": (SAMPLES / f"{d.name}.mp4").exists()}
+    pack_p = d / "study_pack.json"
+    if pack_p.exists():
+        try:
+            pk = load_json(pack_p)
+            item.update(duration=pk.get("duration", 0),
+                        chapters=[{"start": c["start"], "end": c["end"], "importance": c.get("importance", "useful")}
+                                  for c in pk.get("chapters", [])],
+                        boards=sum(len(c.get("boards", [])) for c in pk.get("chapters", [])),
+                        questions=len(pk.get("quiz", [])),
+                        overview=pk.get("overview", ""))
+        except Exception:
+            pass
+    return item
+
+
 @app.get("/jobs")
 def list_jobs():
     out = []
     if WORK.exists():
         for d in sorted(WORK.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if (d / "study_pack.json").exists() or (d / "status.json").exists():
-                st = load_json(d / "status.json") if (d / "status.json").exists() else {"state": "done"}
-                out.append({"id": d.name, "state": st["state"]})
+                out.append(job_card(d))
     return out
 
 
@@ -47,6 +72,7 @@ def create_job(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
     from pipeline.run_all import run  # imported late so the API starts fast
     (WORK / job_id).mkdir(parents=True, exist_ok=True)
+    save_json(WORK / job_id / "meta.json", {"name": Path(file.filename).stem[:120], "created": time.time()})
     threading.Thread(target=run, args=(str(video),), daemon=True).start()
     return {"jobId": job_id}
 
@@ -58,6 +84,31 @@ def status(job_id: str):
     if p.exists():
         return load_json(p)
     return {"state": "done" if (jd / "study_pack.json").exists() else "running", "stage": 0, "stages": [], "error": ""}
+
+
+@app.get("/jobs/{job_id}/meta")
+def meta(job_id: str):
+    return job_card(jdir(job_id))
+
+
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: str):
+    jd = jdir(job_id)
+    p = jd / "status.json"
+    if p.exists() and load_json(p).get("state") == "running":
+        raise HTTPException(409, "This job is still processing")
+    shutil.rmtree(jd, ignore_errors=True)
+    (SAMPLES / f"{job_id}.mp4").unlink(missing_ok=True)
+    return {"deleted": job_id}
+
+
+@app.get("/jobs/{job_id}/video")
+def video(job_id: str):
+    jdir(job_id)
+    p = SAMPLES / f"{job_id}.mp4"
+    if not p.exists():
+        raise HTTPException(404, "Recording not available")
+    return FileResponse(p, media_type="video/mp4")
 
 
 @app.get("/jobs/{job_id}/pack")
